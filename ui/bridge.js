@@ -9,6 +9,7 @@
   let meterOn = null, polling = false;
   const TAKE = { on: false, layout: null, played: 0, done: false, err: null, meter: -120, t0: 0, busy: false, finishing: false };
 
+  const LOOPBACK = /stereo ?mix|스테레오 ?믹스|what ?u ?hear|loopback|wave ?out|루프백/i;
   const real = () => S.type !== 'phone'; // the phone mic needs the phone app (later step)
   const chIndex = () => S.ch === 'Mono' ? 0 : S.ch ? Math.max(0, parseInt(S.ch.replace(/\D/g, ''), 10) - 1) : -1;
 
@@ -29,7 +30,8 @@
         const id = 'o' + i; devId[id] = d.id;
         OUTPUTS.push({ id, name: d.name, sub: `${d.channels}채널 · ${d.sample_rate / 1000} kHz${d.is_default ? ' · 기본' : ''}` });
       });
-      list.inputs.forEach((d, i) => {
+      // loopback inputs ("스테레오 믹스") hear the speakers directly, not the room, so they can't measure anything
+      list.inputs.filter(d => !LOOPBACK.test(d.name)).forEach((d, i) => {
         const id = 'i' + i; devId[id] = d.id;
         const ch = d.channels > 1 ? Array.from({ length: d.channels }, (_, k) => 'Input ' + (k + 1)) : ['Mono'];
         INPUTS.push({ id, name: d.name, sub: `입력 ${d.channels}개 · ${d.sample_rate / 1000} kHz${d.is_default ? ' · 기본' : ''}`, ch });
@@ -120,7 +122,7 @@
 
   async function startTake(list) {
     if (!devId[S.out] || !devId[S.inp] || chIndex() < 0) return fail('출력 장치와 마이크를 먼저 골라 주세요.');
-    Object.assign(TAKE, { on: true, layout: null, played: 0, done: false, err: null, meter: -120, t0: performance.now(), busy: false, finishing: false });
+    Object.assign(TAKE, { on: true, layout: null, played: 0, done: false, err: null, meter: -120, t0: performance.now(), busy: false, finishing: false, noisePeak: -120 });
     try {
       TAKE.layout = await invoke('measure_start', {
         output: devId[S.out], input: devId[S.inp], channel: chIndex(), phases: list, level: Math.max(0, Math.min(1, S.outLvl / 100)),
@@ -193,7 +195,11 @@
       const bf = $('#bdFill'); if (bf) bf.style.width = prog * 100 + '%';
     }
     const db = Math.min(0, TAKE.meter);
-    const txt = db >= -1 ? '찌그러졌어요' : sub === 'noise' ? (db > -45 ? '조금 시끄러워요' : '조용해요') : sub === 'sweep' ? (db < -45 ? '소리가 작아요' : '잘 들어와요') : '쉬는 중';
+    if (sub === 'noise') TAKE.noisePeak = Math.max(TAKE.noisePeak, db);
+    // "잘 들어와요" only when the sweep clearly stands above the room noise heard a moment ago
+    const floor = TAKE.noisePeak > -120 ? TAKE.noisePeak : -60;
+    const txt = db >= -1 ? '찌그러졌어요' : sub === 'noise' ? (db > -45 ? '조금 시끄러워요' : '조용해요')
+      : sub === 'sweep' ? (db < -45 || db < floor + 10 ? '소리가 작아요' : '잘 들어와요') : '쉬는 중';
     setLvl('lvl', db, db >= -1 ? 'clip' : sub === 'noise' && db > -45 ? 'high' : '', txt);
   };
 
