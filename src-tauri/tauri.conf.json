@@ -16,7 +16,10 @@
         "minWidth": 900,
         "minHeight": 640,
         "backgroundColor": "#000000",
-        "center": true
+        "center": true,
+        "decorations": false,
+        "visible": false,
+        "shadow": true
       }
     ],
     "security": {
@@ -25,11 +28,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
     "windows": {
       "nsis": {
-        "languages": ["Korean", "English"]
+        "languages": [
+          "Korean",
+          "English"
+        ]
       }
     }
   }

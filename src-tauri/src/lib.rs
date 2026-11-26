@@ -79,6 +79,19 @@ async fn save_measurement(app: tauri::AppHandle, json: String) -> Result<String,
 pub fn run() {
     tauri::Builder::default()
         .manage(AudioCtl::new())
+        .setup(|app| {
+            // The page shows the window itself once it is drawn; this is only a safety net.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(w) = handle.get_webview_window("main") {
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_devices,
             tone_start,
