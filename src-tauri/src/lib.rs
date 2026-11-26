@@ -53,5 +53,5 @@ pub fn run() {
             meter_stop
         ])
         .run(tauri::generate_context!())
-        .expect("error while running S'FOH");
+        .expect("error while running Sound FOH");
 }

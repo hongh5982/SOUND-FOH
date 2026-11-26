@@ -1,7 +1,7 @@
 [package]
 name = "sfoh"
 version = "0.1.0"
-description = "S'FOH - speaker measurement and tuning for beginners"
+description = "Sound FOH - speaker measurement and tuning for beginners"
 edition = "2021"
 
 [lib]

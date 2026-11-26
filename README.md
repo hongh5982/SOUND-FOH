@@ -1,4 +1,4 @@
-# S'FOH
+# Sound FOH
 
 초보자를 위한 스피커 측정·자동 튜닝 프로그램 (Windows).
 
@@ -11,7 +11,7 @@
 측정 이후 화면은 아직 견본입니다.
 
 ## 설치 파일 받기
-GitHub의 **Actions** 탭 → 가장 최근 "Windows 설치 파일 만들기" 실행 → 아래 **Artifacts**의 `SFOH-windows-installer`를 내려받아 압축을 풀고 `.exe`를 실행하세요.
+GitHub의 **Actions** 탭 → 가장 최근 "Windows 설치 파일 만들기" 실행 → 아래 **Artifacts**의 `SoundFOH-windows-installer`를 내려받아 압축을 풀고 `.exe`를 실행하세요.
 
 ## 구조
 - `ui/` 화면 (HTML/JS, three.js 3D 방). `bridge.js`가 화면을 실제 오디오 엔진에 연결합니다.
