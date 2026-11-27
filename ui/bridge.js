@@ -135,7 +135,7 @@
   const baseStartRun = startRun;
   startRun = function (list, retry) {
     if (!real()) return baseStartRun(list, retry);
-    if (retry) RUN.round++; else resetRun();
+    if (retry) RUN.round++; else { resetRun(); Object.keys(TAKES).forEach(k => delete TAKES[k]); }
     RUN.queue = list; RUN.qi = 0; RUN.accepted = false;
     list.forEach(k => Object.assign(RUN.res[k], { state: 'wait', peak: -99, clip: false, event: false, db: null, snr: null, fr: null }));
     S.step = STEPS.indexOf('run'); S.reached = Math.max(S.reached, S.step);
@@ -243,6 +243,7 @@
       out.noiseDb = +noiseDb.toFixed(1);
     }
     const nDb = noiseDb ?? RUN.res.noise.db ?? -90;
+    const takes = {};
     L.segs.filter(s => s.kind === 'sweep').forEach(s => {
       const tail = L.segs.find(t => t.kind === 'tail' && t.phase === s.phase);
       const a = Math.max(0, at(s.start) - margin), b = Math.min(rec.length, at(s.start + s.len + (tail ? tail.len : 0)));
@@ -257,11 +258,32 @@
         state: 'done', peak: DSP.dbfs(pk), clip: hard >= 3, event: false,
         snr: sigDb - nDb, delayMs: (p - (at(s.start) - a)) / fs * 1000, fr: { freqs, db },
       });
+      takes[s.phase] = { ir, peak: p, arrivalMs: r.delayMs };
       out.runs[s.phase] = { peakDb: +r.peak.toFixed(1), clip: r.clip, snr: +r.snr.toFixed(1), delayMs: +r.delayMs.toFixed(2), db: db.map(v => +v.toFixed(2)) };
     });
     out.freqs = freqs.map(f => +f.toFixed(1));
+    // a re-measure only redoes some speakers: keep the last good take of the others
+    Object.keys(takes).forEach(k => { TAKES[k] = takes[k]; });
+    showAnalysis(fs);
+    out.issues = ISSUES.map(it => ({ kind: it.kind, t: it.t, ev: it.ev }));
+    out.decay = ANA.decay; out.arrival = ANA.arrival;
     invoke('save_measurement', { json: JSON.stringify(out) }).catch(() => {});
     console.log('measurement', out);
+  }
+
+  // ---------- results: problems and graphs from the real takes ----------
+  const TAKES = {};
+  function showAnalysis(fs) {
+    ANA = ANALYSIS.run(TAKES, fs);
+    ISSUES.length = 0;
+    ANA.issues.forEach(it => ISSUES.push(it));
+    S.openIssue = null; S.dIssue = null;
+    const a = ANA.arrival, tab = TABS.find(t => t[0] === 'ir');
+    if (tab && a.L != null && a.R != null) {
+      const d = a.R - a.L;
+      tab[2] = Math.abs(d) < 0.05 ? '소리가 마이크에 도착한 순간이에요. L과 R이 거의 동시에 도착해요.'
+        : `소리가 마이크에 도착한 순간이에요. ${d > 0 ? 'L이 R' : 'R이 L'}보다 ${Math.abs(d).toFixed(2)} ms 먼저 도착해요.`;
+    }
   }
 
   // ---------- small things ----------
@@ -273,7 +295,7 @@
   renderMock = function () {
     baseMock();
     const m = document.getElementById('mock');
-    if (m) m.lastElementChild.textContent = '· 결과 요약부터는 아직 견본이에요';
+    if (m) m.lastElementChild.textContent = '· 튜닝부터는 아직 견본이에요';
   };
 
   loadDevices();
