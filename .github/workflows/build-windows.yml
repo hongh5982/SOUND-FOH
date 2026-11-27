@@ -25,6 +25,16 @@ jobs:
       - name: Install Tauri CLI
         run: npm install
 
+      # Equalizer APO goes into the installer unchanged; the checksum makes sure it is the official file.
+      - name: Download Equalizer APO 1.4.2
+        shell: bash
+        run: |
+          mkdir -p src-tauri/eapo
+          f=src-tauri/eapo/EqualizerAPO-x64-1.4.2.exe
+          curl -fL --retry 4 --retry-delay 5 -A "Wget/1.21" -o "$f" \
+            "https://sourceforge.net/projects/equalizerapo/files/1.4.2/EqualizerAPO-x64-1.4.2.exe/download"
+          echo "7403be7427bbe1936a40dded082829b6e217fc4f5990fee5cba501f0ae055afa  $f" | sha256sum -c -
+
       - name: Build installer
         run: npx tauri build
 

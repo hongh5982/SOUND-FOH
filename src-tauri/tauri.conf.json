@@ -42,8 +42,13 @@
         "languages": [
           "Korean",
           "English"
-        ]
+        ],
+        "installMode": "perMachine",
+        "installerHooks": "windows/hooks.nsh"
       }
+    },
+    "resources": {
+      "eapo/EqualizerAPO-x64-1.4.2.exe": "eapo/EqualizerAPO-x64-1.4.2.exe"
     }
   }
 }

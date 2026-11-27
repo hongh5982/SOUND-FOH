@@ -71,6 +71,8 @@
 
     // leaving the run screen or pressing stop ends the take
     if (TAKE.on && !active() && RUN.sub !== 'done') { TAKE.on = false; invoke('measure_stop'); }
+    if (CHECK.on && !tuneAlive()) { CHECK.on = false; invoke('measure_stop'); }
+    keepProfiles();
   }
 
   // the screen re-renders often; check the audio after each render
@@ -124,6 +126,7 @@
     if (!devId[S.out] || !devId[S.inp] || chIndex() < 0) return fail('출력 장치와 마이크를 먼저 골라 주세요.');
     Object.assign(TAKE, { on: true, layout: null, played: 0, done: false, err: null, meter: -120, t0: performance.now(), busy: false, finishing: false, noisePeak: -120 });
     try {
+      await clearCorrection();      // measure the speakers as they are, without Sound FOH's correction
       TAKE.layout = await invoke('measure_start', {
         output: devId[S.out], input: devId[S.inp], channel: chIndex(), phases: list, level: Math.max(0, Math.min(1, S.outLvl / 100)),
       });
@@ -226,24 +229,20 @@
     return y;
   }
 
-  function analyse(rec, offset) {
-    const L = TAKE.layout, fs = L.out_rate;
+  // turns one recorded take into an impulse response and level readings per sweep
+  function readTake(rec, offset, L, noiseFallback) {
+    const fs = L.out_rate;
     if (L.in_rate !== fs) { rec = resample(rec, L.in_rate, fs); offset = Math.round(offset * fs / L.in_rate); }
     const at = (s) => offset + s;   // program sample -> recording sample (same clock offset for the whole take)
     const sw = DSP.sweep(fs, 5, 20, 20000, L.sweep_amp);
     const freqs = DSP.logFreqs(240, 20, 20000), margin = Math.round(0.05 * fs);
-    const out = { when: new Date().toISOString(), outRate: L.out_rate, inRate: L.in_rate, level: S.outLvl, offset, runs: {} };
-
     const nz = L.segs.find(s => s.kind === 'noise');
     let noiseDb = null;
     if (nz) {
       const a = Math.max(0, at(nz.start + Math.round(0.25 * fs))), b = Math.min(rec.length, at(nz.start + nz.len));
       noiseDb = DSP.dbfs(DSP.rms(rec, a, b));
-      RUN.res.noise.db = noiseDb; RUN.res.noise.state = 'done';
-      out.noiseDb = +noiseDb.toFixed(1);
     }
-    const nDb = noiseDb ?? RUN.res.noise.db ?? -90;
-    const takes = {};
+    const nDb = noiseDb ?? noiseFallback ?? -90, runs = {};
     L.segs.filter(s => s.kind === 'sweep').forEach(s => {
       const tail = L.segs.find(t => t.kind === 'tail' && t.phase === s.phase);
       const a = Math.max(0, at(s.start) - margin), b = Math.min(rec.length, at(s.start + s.len + (tail ? tail.len : 0)));
@@ -252,14 +251,27 @@
       for (let i = 0; i < chunk.length; i++) { const v = Math.abs(chunk[i]); if (v > pk) pk = v; if (v >= 0.99) hard++; }
       const sigDb = DSP.dbfs(DSP.rms(rec, Math.max(0, at(s.start)), Math.min(rec.length, at(s.start + s.len))));
       const ir = DSP.deconvolve(chunk, sw, fs), p = DSP.peakIndex(ir, chunk.length);
-      const db = DSP.response(ir, fs, p, freqs, { smooth: 6 });
-      const r = RUN.res[s.phase];
-      Object.assign(r, {
-        state: 'done', peak: DSP.dbfs(pk), clip: hard >= 3, event: false,
-        snr: sigDb - nDb, delayMs: (p - (at(s.start) - a)) / fs * 1000, fr: { freqs, db },
-      });
-      takes[s.phase] = { ir, peak: p, arrivalMs: r.delayMs };
-      out.runs[s.phase] = { peakDb: +r.peak.toFixed(1), clip: r.clip, snr: +r.snr.toFixed(1), delayMs: +r.delayMs.toFixed(2), db: db.map(v => +v.toFixed(2)) };
+      runs[s.phase] = {
+        ir, peak: p, peakDb: DSP.dbfs(pk), clip: hard >= 3, snr: sigDb - nDb,
+        delayMs: (p - (at(s.start) - a)) / fs * 1000, db: DSP.response(ir, fs, p, freqs, { smooth: 6 }),
+      };
+    });
+    return { fs, freqs, noiseDb, runs };
+  }
+
+  function analyse(rec, offset) {
+    const L = TAKE.layout, t = readTake(rec, offset, L, RUN.res.noise.db), fs = t.fs, freqs = t.freqs;
+    const out = { when: new Date().toISOString(), outRate: L.out_rate, inRate: L.in_rate, level: S.outLvl, offset, runs: {} };
+    if (t.noiseDb != null) {
+      RUN.res.noise.db = t.noiseDb; RUN.res.noise.state = 'done';
+      out.noiseDb = +t.noiseDb.toFixed(1);
+    }
+    const takes = {};
+    Object.entries(t.runs).forEach(([ph, x]) => {
+      const r = RUN.res[ph];
+      Object.assign(r, { state: 'done', peak: x.peakDb, clip: x.clip, event: false, snr: x.snr, delayMs: x.delayMs, fr: { freqs, db: x.db } });
+      takes[ph] = { ir: x.ir, peak: x.peak, arrivalMs: x.delayMs };
+      out.runs[ph] = { peakDb: +x.peakDb.toFixed(1), clip: x.clip, snr: +x.snr.toFixed(1), delayMs: +x.delayMs.toFixed(2), db: x.db.map(v => +v.toFixed(2)) };
     });
     out.freqs = freqs.map(f => +f.toFixed(1));
     // a re-measure only redoes some speakers: keep the last good take of the others
@@ -286,6 +298,182 @@
     }
   }
 
+  // ---------- Equalizer APO: switching it on for the speaker, writing the correction ----------
+  const EAPO = { st: {}, applied: undefined, seen: false, asked: new Set() };
+  const realTune = () => real() && ANA && devId[S.out] && devId[S.inp] && chIndex() >= 0;
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const errText = (e) => String(e && e.message || e).replace(/^denied: /, '');
+
+  async function eapoStatus(dev) {
+    try { const st = await invoke('eapo_status', { device: dev }); EAPO.st[dev] = st; if (st.enabled) EAPO.seen = true; return st; }
+    catch (e) { return { installed: false, found: false, enabled: false }; }
+  }
+  // switches Equalizer APO on for the speaker; Windows asks for permission once
+  async function ensureEapo(dev) {
+    let st = await eapoStatus(dev);
+    if (st.enabled) return st;
+    if (!st.installed) throw new Error('Equalizer APO가 설치돼 있지 않아요. Sound FOH를 다시 설치해 주세요.');
+    if (!st.found) {
+      const want = OUTPUTS.find(o => o.id === S.out)?.name || '';
+      const seen = (st.names || []).join(' / ') || '없음';
+      throw new Error(`이 스피커를 Windows 오디오 장치 목록에서 찾지 못했어요. 찾는 이름: ${want}. Windows에 있는 장치: ${seen}`);
+    }
+    const name = OUTPUTS.find(o => o.id === S.out)?.name;
+    try { st = await invoke('eapo_enable', { device: dev }); }
+    catch (e) { throw new Error(String(e) === 'cancelled' ? 'Windows에서 허락하지 않아서 보정을 켜지 못했어요.' : '보정을 켜지 못했어요: ' + e); }
+    EAPO.st[dev] = st;
+    if (!st.enabled) throw new Error('보정을 켰지만 장치에 반영되지 않았어요. PC를 다시 시작한 뒤 해 보세요.');
+    EAPO.seen = true;
+    // the audio service restarted: read the devices again and keep the same speaker picked
+    await loadDevices();
+    const again = OUTPUTS.find(o => o.name === name); if (again) S.out = again.id;
+    return st;
+  }
+  async function writeCorrection(text) {
+    await invoke('eapo_write', { text });
+    EAPO.applied = text;
+  }
+  async function clearCorrection() {
+    const dev = devId[S.out]; if (!dev) return;
+    const st = EAPO.st[dev] || await eapoStatus(dev);
+    if (!st.enabled || EAPO.applied === '') return;
+    try { await writeCorrection(''); await wait(800); } catch (e) { /* nothing to clear */ }
+  }
+
+  // picking the speaker: switch Equalizer APO on for it right away, so tuning later needs no questions
+  let passNext = false;
+  window.addEventListener('click', async (e) => {
+    const b = e.target.closest && e.target.closest('[data-act="next"]');
+    if (!b || passNext || key() !== 'output') return;
+    const dev = devId[S.out];
+    if (!dev || EAPO.st[dev]?.enabled || EAPO.asked.has(dev)) return;
+    e.stopPropagation(); e.preventDefault();
+    b.disabled = true;
+    invoke('tone_stop'); tone = null; S.tone = false;
+    note('스피커 보정을 준비하고 있어요. Windows가 허락을 물어보면 ‘예’를 눌러 주세요.');
+    try { await ensureEapo(dev); } catch (err) { console.warn('eapo', err); }
+    EAPO.asked.add(dev); if (devId[S.out]) EAPO.asked.add(devId[S.out]);
+    b.disabled = false;
+    passNext = true; try { (document.querySelector('[data-act="next"]') || b).click(); } finally { passNext = false; }
+  }, true);
+
+  // ---------- check measurements during tuning ----------
+  const CHECK = { on: false };
+  const tuneAlive = () => key() === 'tune' && TUNE.sub === 'run';
+  async function recordCheck(id) {
+    const live = () => TUNE.id === id && tuneAlive();
+    CHECK.on = true;
+    try {
+      const L = await invoke('measure_start', { output: devId[S.out], input: devId[S.inp], channel: chIndex(), phases: ['noise', 'L', 'R'], level: Math.max(0, Math.min(1, S.outLvl / 100)) });
+      const t0 = performance.now(), limit = L.total / L.out_rate * 1000 + 6000;
+      for (;;) {
+        await wait(120);
+        if (!live()) return null;
+        const st = await invoke('measure_status');
+        if (st.error) throw new Error(st.error);
+        TUNE.prog = Math.min(1, st.played / L.total);
+        if (st.done) {
+          const buf = await invoke('measure_take'), st2 = await invoke('measure_status');
+          return readTake(new Float32Array(buf), st2.offset, L, RUN.res.noise.db);
+        }
+        if (st.played === 0 && performance.now() - t0 > 4000) throw new Error('스피커로 소리를 보낼 수 없어요.');
+        if (performance.now() - t0 > limit) throw new Error('마이크 소리가 들어오지 않아요.');
+      }
+    } finally { CHECK.on = false; invoke('measure_stop'); }
+  }
+
+  // ---------- auto tuning: calculate, apply, check; up to three rounds ----------
+  const baseStartTune = startTune, baseTuneTick = tuneTick, baseTuneTarget = tuneTarget;
+  tuneTarget = function () { return TUNE.real ? ['L', 'R'] : baseTuneTarget(); };
+  tuneTick = function () {
+    if (!TUNE.real) return baseTuneTick();
+    if (TUNE.sub !== 'run') return stopLoop();
+    if (TPH[TUNE.ph][0] !== 'verify') TUNE.prog = Math.min(0.95, (performance.now() - TUNE.t0) / TPH[TUNE.ph][2]);
+    const bar = $('#tpg'); if (bar) bar.style.width = (TUNE.prog * 100) + '%';
+  };
+  startTune = function (retry) {
+    if (!realTune()) return baseStartTune(retry);
+    stopLoop(); resetTune();
+    const id = (TUNE.id || 0) + 1;
+    Object.assign(TUNE, { id, real: true, retried: !!retry, base: ANA, plan: null, pred: null, after: null, err: '', applied: false, before: EAPO.applied });
+    TUNE.t0 = performance.now(); render(); loop(tuneTick);
+    runTune(id);
+  };
+  async function runTune(id) {
+    const live = () => TUNE.id === id && tuneAlive();
+    const phase = (ph) => { TUNE.ph = ph; TUNE.t0 = performance.now(); TUNE.prog = 0; render(); };
+    const base = TUNE.base, issues = ISSUES.slice();
+    let plan = null, last = base;
+    try {
+      for (let round = 1; round <= TMAX; round++) {
+        TUNE.round = round; phase(0);
+        plan = round === 1 ? TUNER.first(base) : TUNER.refine(plan, last);
+        await wait(round === 1 ? 900 : 600);
+        if (!live()) return;
+        phase(1);
+        if (round === 1) await ensureEapo(devId[S.out]);
+        if (!live()) return;
+        await writeCorrection(TUNER.text(plan));
+        Object.assign(TUNE, { plan, applied: true, amt: 1, pred: TUNER.predict(base, plan) });
+        await wait(1500);                      // Equalizer APO picks the new file up by itself
+        if (!live()) return;
+        phase(2);
+        const t = await recordCheck(id);
+        if (!t || !live()) return;
+        const takes = {};
+        Object.entries(t.runs).forEach(([ph, x]) => { takes[ph] = { ir: x.ir, peak: x.peak, arrivalMs: x.delayMs }; });
+        last = ANALYSIS.run(takes, t.fs);
+        TUNE.after = last;
+        TUNE.done = TUNER.fixed(issues, last);
+        console.log('tune round', round, TUNER.text(plan), last);
+        if (TUNER.good(last, plan)) break;
+      }
+      TUNE.sub = 'done'; stopLoop(); render();
+    } catch (e) {
+      if (TUNE.id !== id) return;
+      // put back what was there before, so a failed tuning changes nothing
+      let back = true;
+      if (TUNE.applied) { try { await writeCorrection(TUNE.before || ''); } catch (_) { back = false; } }
+      Object.assign(TUNE, { sub: 'fail', err: errText(e), reverted: back, applied: false, amt: 0 });
+      stopLoop(); render();
+    }
+  }
+
+  // ---------- speaker profiles: kept in the app's data folder, the current one is applied ----------
+  let saved = null, loaded = false;
+  ensureProf = function () { profInit = true; };
+  tuneSaved = function () {
+    profInit = true;
+    let name = S.profName || 'My Speaker Profile';
+    if (PROF.some(p => p.name === name)) { let n = 2; while (PROF.some(p => p.name === `My Speaker Profile ${n}`)) n++; name = `My Speaker Profile ${n}`; }
+    const out = OUTPUTS.find(o => o.id === S.out), r2 = (a) => a && a.map(v => +v.toFixed(2));
+    const after = TUNE.after ? TUNE.after.fr : TUNE.pred || {};
+    PROF.forEach(p => p.cur = false);
+    PROF.unshift({
+      name, date: new Date().toLocaleDateString('ko-KR'), dev: out ? out.name : '기본 출력 장치', cur: true,
+      plan: TUNE.applied ? TUNE.plan : null,
+      before: { L: r2(TUNE.base.fr.L), R: r2(TUNE.base.fr.R) }, after: { L: r2(after.L), R: r2(after.R) },
+    });
+    S.profName = name; EQ.corr = true;
+  };
+  function keepProfiles() {
+    if (!loaded) return;
+    const j = JSON.stringify(PROF);
+    if (j !== saved) { saved = j; invoke('profiles_save', { json: j }).catch(e => console.warn('profiles', e)); }
+    // outside measuring and tuning, the speaker plays with the current profile's correction
+    if (!['menu', 'profiles', 'settings', 'done'].includes(key()) || !EAPO.seen) return;
+    const c = curProf(), want = c && c.plan ? TUNER.text(c.plan) : '';
+    if (want !== EAPO.applied) { EAPO.applied = want; invoke('eapo_write', { text: want }).catch(() => { EAPO.applied = undefined; }); }
+  }
+  async function loadProfiles() {
+    try {
+      const list = JSON.parse(await invoke('profiles_load'));
+      if (Array.isArray(list)) { PROF.length = 0; list.forEach(p => PROF.push(p)); }
+    } catch (e) { console.warn('profiles', e); }
+    profInit = true; loaded = true; saved = JSON.stringify(PROF);
+    const c = curProf(); if (c) S.profName = c.name;
+  }
+
   // ---------- small things ----------
   // pick up devices plugged in while the app is open
   window.addEventListener('focus', () => { if (['output', 'input'].includes(key())) loadDevices(); });
@@ -295,8 +483,9 @@
   renderMock = function () {
     baseMock();
     const m = document.getElementById('mock');
-    if (m) m.lastElementChild.textContent = '· 튜닝부터는 아직 견본이에요';
+    if (m) m.lastElementChild.textContent = '· 음악 EQ는 아직 견본이에요';
   };
 
   loadDevices();
+  loadProfiles();
 })();
