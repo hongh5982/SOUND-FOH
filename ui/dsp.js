@@ -102,6 +102,6 @@ const DSP = (() => {
   const rms = (x, a = 0, b = x.length) => { let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return Math.sqrt(s / Math.max(1, b - a)); };
   const peakAbs = (x) => { let m = 0; for (let i = 0; i < x.length; i++) m = Math.max(m, Math.abs(x[i])); return m; };
   const dbfs = (v) => 20 * Math.log10(v + 1e-12);
-  return { fft, sweep, deconvolve, peakIndex, response, logFreqs, selfTest, rms, peakAbs, dbfs, ROOM };
+  return { fft, sweep, deconvolve, peakIndex, response, logFreqs, selfTest, rms, peakAbs, dbfs, ROOM, peaking, biquadDb, filt };
 })();
 if (typeof module !== 'undefined') module.exports = DSP;

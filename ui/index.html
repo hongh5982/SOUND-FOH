@@ -517,8 +517,18 @@ function frFixed(f, amt) {
   const lf = Math.log10(f);
   return frDb('LR', f) - amt * (6 * g(lf, 1.78, 0.1) + 4 * g(lf, 3.6, 0.1)) - 4;
 }
+// called when a real tuning is finished and its result becomes a profile (the app's bridge.js fills this in)
+function tuneSaved() {}
+// both speakers together (power average of L and R) from a pair of real curves
+const bothAt = (fr, f) => fr.L && fr.R ? 10 * Math.log10((Math.pow(10, anaAt(fr.L, f) / 10) + Math.pow(10, anaAt(fr.R, f) / 10)) / 2) : anaAt(fr.L || fr.R || fr.LR, f);
 function tuneGraph() {
   const Y = (d) => G.t + (15 - d) / 35 * (G.H - G.t - G.b);
+  if (TUNE.real && TUNE.base) {
+    const aft = TUNE.after ? TUNE.after.fr : TUNE.pred;
+    const before = `<path d="${pathFrom(f => bothAt(TUNE.base.fr, f), logXs, gx, Y)}" fill="none" stroke="#6f6f6f" stroke-width="2"/>`;
+    const after = TUNE.amt > 0 && aft ? `<path d="${pathFrom(f => bothAt(aft, f), logXs, gx, Y)}" fill="none" stroke="#fff" stroke-width="2.2"${TUNE.after ? '' : ' stroke-dasharray="5 4"'}/>` : '';
+    return `<svg viewBox="0 0 ${G.W} ${G.H}" role="img" aria-label="튜닝 전후 주파수 그래프">${xAxisF()}${yAxis([10, 0, -10], Y, '')}${before}${after}</svg>`;
+  }
   const before = `<path d="${pathFrom(f => frDb('LR', f) - 4, logXs, gx, Y)}" fill="none" stroke="#6f6f6f" stroke-width="2"/>`;
   const after = TUNE.amt > 0 ? `<path d="${pathFrom(f => frFixed(f, TUNE.amt), logXs, gx, Y)}" fill="none" stroke="#fff" stroke-width="2.2"/>` : '';
   return `<svg viewBox="0 0 ${G.W} ${G.H}" role="img" aria-label="튜닝 전후 주파수 그래프"><text class="ax" x="${G.W - G.r}" y="10" text-anchor="end">예시 데이터</text>${xAxisF()}${yAxis([10, 0, -10], Y, '')}${before}${after}</svg>`;
@@ -1048,18 +1058,18 @@ const VIEWS = {
     if (sub === 'fail') return `
     <div class="badge warn" aria-hidden="true">!</div>
     <h1>보정을 적용하지<br>못했어요</h1>
-    <p class="sub">출력 장치에 보정을 쓰지 못했어요. 아직 아무것도 바뀌지 않았어요.</p>
+    <p class="sub">${TUNE.err ? esc(TUNE.err) : '출력 장치에 보정을 쓰지 못했어요.'} ${TUNE.reverted === false ? '' : '아직 아무것도 바뀌지 않았어요.'}</p>
     <div class="body"></div>
     <div class="actions"><button class="btn primary" data-act="tuneretry">다시 시도</button><button class="btn" data-act="tunecancel">원래대로 두기</button></div>`;
     const fin = sub === 'done', none = fin && TUNE.amt === 0;
     const title = !fin ? '자동 튜닝 중이에요' : none ? '튜닝을 멈췄어요' : '튜닝이 끝났어요';
-    const lead = !fin ? '' : none ? '아직 바뀐 것이 없어요.' : TUNE.early ? '지금까지의 보정값을 적용했어요.' : `튜닝으로 해결되는 문제 ${ids.length}개를 보정했어요.`;
+    const lead = !fin ? '' : none ? '아직 바뀐 것이 없어요.' : TUNE.early ? '지금까지의 보정값을 적용했어요.' : TUNE.real ? (TUNE.done.length ? `튜닝으로 해결되는 문제 ${ids.length}개 중 ${TUNE.done.length}개를 보정했어요.` : '보정값을 적용했어요.') : `튜닝으로 해결되는 문제 ${ids.length}개를 보정했어요.`;
     const rows = fin ? '' : `<div class="rows">${TPH.map(([k, t], i) => {
       const cur = i === TUNE.ph, v = cur ? `<span class="dot"></span>${k === 'verify' ? '측정 중' : '진행 중'}` : i < TUNE.ph ? '<span class="tick">✓</span>' : '대기';
       return `<div class="r ${cur ? 'run' : ''}"><span class="t">${t}</span><span class="v">${v}</span>${cur ? '<span class="bar"><i id="tpg"></i></span>' : ''}</div>`;
     }).join('')}</div><p class="hint tround">${TUNE.round}회째 · 최대 ${TMAX}회</p>`;
     const list = `<div class="tlist">${ids.map(i => {
-      const ok = TUNE.done.includes(i), cur = !fin && !ok && i === ids[TFIX[TUNE.round - 1]];
+      const ok = TUNE.done.includes(i), cur = !fin && !ok && (TUNE.real || i === ids[TFIX[TUNE.round - 1]]);
       return `<div class="titem"><span class="num">${i + 1}</span><span class="t">${ISSUES[i].t}</span><span class="v ${ok ? 'ok' : ''}">${ok ? '완료' : cur ? '보정 중' : fin ? '그대로' : '대기'}</span></div>`;
     }).join('')}</div>`;
     return `
@@ -1348,6 +1358,7 @@ document.addEventListener('click', (e) => {
   if (d.pick !== undefined) { EQ.sel = EQ.sel === +d.pick ? null : +d.pick; return render(); }
   if (d.act === 'donego') {
     S.renaming = false;
+    if (TUNE.real) { tuneSaved(); S.newProf = false; return go(STEPS.indexOf('done')); }
     if (S.newProf && profInit) { // a new measurement makes a new profile and applies it
       let n = 2; while (PROF.some(p => p.name === `My Speaker Profile ${n}`)) n++;
       const out = OUTPUTS.find(o => o.id === S.out);
@@ -2095,4 +2106,5 @@ document.addEventListener('change', (e) => {
 <script src="chrome.js"></script>
 <script src="dsp.js"></script>
 <script src="analysis.js"></script>
+<script src="tune.js"></script>
 <script src="bridge.js"></script>
