@@ -649,18 +649,20 @@ function qrSVG() {
   return `<svg viewBox="-2 -2 ${N + 4} ${N + 4}" role="img" aria-label="연결용 QR 코드 (예시)" class="qr"><rect x="-2" y="-2" width="${N + 4}" height="${N + 4}" fill="#fff"/><g fill="#000">${cells.join('')}</g></svg>`;
 }
 
+// too little signal: low peak, or the sweep barely rises above the room noise
+const isQuiet = (k) => RUN.res[k].peak < -40 || (RUN.res[k].snr != null && RUN.res[k].snr < 20);
 function evaluate() {
   const r = RUN.res;
   if (!SWEEPS.every(k => r[k].state === 'done') || r.noise.db === null) return { items: [], problems: [], ready: false };
   const nz = r.noise.db, list = (f) => SWEEPS.filter(f).map(k => PH[k].short).join(', ');
-  const loud = list(k => r[k].peak >= -1), quiet = list(k => r[k].peak < -40), clip = list(k => r[k].clip), evt = list(k => r[k].event);
+  const loud = list(k => r[k].peak >= -1), quiet = list(isQuiet), clip = list(k => r[k].clip), evt = list(k => r[k].event);
   const items = [
     ['소리 크기', loud ? ['bad', `${loud} 너무 커요`] : quiet ? ['warn', `${quiet} 작아요`] : ['ok', '적당해요']],
     ['찌그러짐', clip ? ['bad', `${clip}에서 있어요`] : ['ok', '없어요']],
     ['주변 소음', evt ? ['warn', `${evt}에서 소음`] : nz > -45 ? ['warn', '조금 시끄러워요'] : ['ok', '조용해요']],
     [S.type === 'phone' ? '녹음 파일' : '측정 데이터', ['ok', '모두 받았어요']],
   ];
-  return { items, problems: SWEEPS.filter(k => r[k].clip || r[k].event), ready: true };
+  return { items, problems: SWEEPS.filter(k => r[k].clip || r[k].event || isQuiet(k)), ready: true };
 }
 
 // ---------- screens ----------
@@ -828,7 +830,7 @@ const VIEWS = {
     const ev = evaluate();
     if (!ev.ready) return `<h1>아직 측정 데이터가 없어요</h1><div class="body"></div><div class="actions"><button class="btn primary" data-act="start">측정 시작하기</button></div>`;
     const pr = ev.problems, names = pr.map(k => NICE[k]).join(', ');
-    const clip = pr.some(k => RUN.res[k].clip), evt = pr.some(k => RUN.res[k].event);
+    const clip = pr.some(k => RUN.res[k].clip), evt = pr.some(k => RUN.res[k].event), quiet = !clip && pr.some(isQuiet);
     const rows = `<div class="rows">${ev.items.map(([t, [c, v]]) => `<div class="r"><span class="t">${t}</span><span class="v ${c}">${v}</span></div>`).join('')}</div>`;
     if (!pr.length) return `
       <div class="badge ok">✓</div>
@@ -839,9 +841,9 @@ const VIEWS = {
     return `
       <div class="badge warn">!</div>
       <h1>${names} 측정을<br>다시 하면 더 정확해요</h1>
-      <p class="sub">${clip ? '저음에서 소리가 찌그러졌어요.' : ''}${clip && evt ? ' ' : ''}${evt ? '측정 중에 다른 소리가 들어왔어요.' : ''}</p>
+      <p class="sub">${[clip && '저음에서 소리가 찌그러졌어요.', quiet && '마이크에 들어온 소리가 작아요.', evt && '측정 중에 다른 소리가 들어왔어요.'].filter(Boolean).join(' ')}</p>
       <div class="body">${rows}
-        ${clip ? `<div class="now"><div class="lvlrow"><span>출력 레벨을 조금 낮춰 주세요</span></div>
+        ${clip || quiet ? `<div class="now"><div class="lvlrow"><span>출력 레벨을 조금 ${clip ? '낮춰' : '높여'} 주세요</span></div>
           <div class="fader"><input type="range" id="reLvl" min="0" max="100" step="1" value="${S.outLvl}" aria-label="출력 레벨"><span class="readout" id="reLvlR">${S.outLvl}%</span></div></div>` : ''}
       </div>
       <div class="actions">
@@ -2067,4 +2069,6 @@ document.addEventListener('change', (e) => {
 })();
 </script>
 <script>render();</script>
+<script src="chrome.js"></script>
+<script src="dsp.js"></script>
 <script src="bridge.js"></script>
