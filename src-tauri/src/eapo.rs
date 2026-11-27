@@ -80,6 +80,8 @@ mod win {
     const P_CONNECTION: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
     const P_DEVICE: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
     const P_COMBINED: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},41";
+    // DEVPKEY_Device_FriendlyName: the name cpal (and so the device list) shows
+    const P_FRIENDLY: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},14";
     const RENDER: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render";
     const APP: &str = r"SOFTWARE\EqualizerAPO";
     const NOKEY: &str = "!KEY";
@@ -113,16 +115,20 @@ mod win {
         p.is_dir().then_some(p)
     }
 
-    /// Finds the render endpoint whose Windows name is "<connection> (<device>)", as WASAPI names it.
+    /// Finds the render endpoint for a speaker name as the device list shows it (Windows' friendly name,
+    /// the same property cpal reads). Names are compared ignoring case and surrounding spaces.
     pub fn find_endpoint(name: &str) -> Option<String> {
         let render = read(RENDER)?;
+        let want = name.trim().to_lowercase();
         let mut best: Option<(String, bool)> = None;
         for guid in render.enum_keys().flatten() {
             let Ok(dev) = render.open_subkey_with_flags(&guid, KEY_READ | KEY_WOW64_64KEY) else { continue };
             let Ok(props) = dev.open_subkey_with_flags("Properties", KEY_READ | KEY_WOW64_64KEY) else { continue };
             let conn: String = props.get_value(P_CONNECTION).unwrap_or_default();
             let devn: String = props.get_value(P_DEVICE).unwrap_or_default();
-            if format!("{conn} ({devn})") != name && conn != name {
+            let friendly: String = props.get_value(P_FRIENDLY).unwrap_or_default();
+            let names = [friendly, format!("{conn} ({devn})"), conn];
+            if !names.iter().any(|n| !n.is_empty() && n.trim().to_lowercase() == want) {
                 continue;
             }
             let active = dev.get_value::<u32, _>("DeviceState").map(|s| s & 0xF == 1).unwrap_or(false);
