@@ -19,6 +19,8 @@ pub struct Status {
     pub enabled: bool,
     pub guid: Option<String>,
     pub config_dir: Option<String>,
+    /// When the speaker isn't found: every Windows speaker name the app looked at, for the error message.
+    pub names: Vec<String>,
 }
 
 /// "3|Speakers (Realtek Audio)" -> "Speakers (Realtek Audio)"
@@ -147,15 +149,33 @@ mod win {
         fx_values(guid).map_or(false, |v| v.iter().any(|s| s.eq_ignore_ascii_case(PRE) || s.eq_ignore_ascii_case(POST)))
     }
 
+    /// Every render endpoint's names (friendly name, connection + device, GUID), used only in the
+    /// "not found" message so the mismatch can be seen.
+    fn render_names() -> Vec<String> {
+        let Some(render) = read(RENDER) else { return Vec::new() };
+        let mut out = Vec::new();
+        for guid in render.enum_keys().flatten() {
+            let Ok(dev) = render.open_subkey_with_flags(&guid, KEY_READ | KEY_WOW64_64KEY) else { continue };
+            let Ok(props) = dev.open_subkey_with_flags("Properties", KEY_READ | KEY_WOW64_64KEY) else { continue };
+            let conn: String = props.get_value(P_CONNECTION).unwrap_or_default();
+            let devn: String = props.get_value(P_DEVICE).unwrap_or_default();
+            let friendly: String = props.get_value(P_FRIENDLY).unwrap_or_default();
+            out.push(format!("[{friendly}] [{conn} ({devn})] {guid}"));
+        }
+        out
+    }
+
     pub fn status(device: &str) -> Status {
         let installed = install_dir().map_or(false, |d| d.join("EqualizerAPO.dll").is_file());
         let guid = find_endpoint(device_name(device));
+        let names = if guid.is_none() { render_names() } else { Vec::new() };
         Status {
             installed,
             found: guid.is_some(),
             enabled: guid.as_deref().map_or(false, is_enabled),
             config_dir: config_dir().map(|p| p.to_string_lossy().into_owned()),
             guid,
+            names,
         }
     }
 

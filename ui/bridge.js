@@ -313,7 +313,11 @@
     let st = await eapoStatus(dev);
     if (st.enabled) return st;
     if (!st.installed) throw new Error('Equalizer APO가 설치돼 있지 않아요. Sound FOH를 다시 설치해 주세요.');
-    if (!st.found) throw new Error('이 스피커를 Windows 오디오 장치 목록에서 찾지 못했어요.');
+    if (!st.found) {
+      const want = OUTPUTS.find(o => o.id === S.out)?.name || '';
+      const seen = (st.names || []).join(' / ') || '없음';
+      throw new Error(`이 스피커를 Windows 오디오 장치 목록에서 찾지 못했어요. 찾는 이름: ${want}. Windows에 있는 장치: ${seen}`);
+    }
     const name = OUTPUTS.find(o => o.id === S.out)?.name;
     try { st = await invoke('eapo_enable', { device: dev }); }
     catch (e) { throw new Error(String(e) === 'cancelled' ? 'Windows에서 허락하지 않아서 보정을 켜지 못했어요.' : '보정을 켜지 못했어요: ' + e); }
